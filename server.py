@@ -74,11 +74,11 @@ async def whatsapp_webhook(request: Request):
     if not testo_ricevuto or not testo_ricevuto.strip():
         return Response(content="<Response></Response>", media_type="application/xml")
 
-    # Chiamata Groq con modello supportato
+    # Chiamata Groq con modello attivo
     try:
         print("--> Chiamata a Groq...")
         chat_completion = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": testo_ricevuto}
@@ -90,7 +90,7 @@ async def whatsapp_webhook(request: Request):
         print(f"--> [ERRORE GROQ]: {e}")
         testo_risposta = f"Errore AI: {str(e)}"
 
-    # Costruzione TwiML XML valido
+    # TwiML XML valido
     escaped_reply = html.escape(testo_risposta)
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
