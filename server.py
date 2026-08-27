@@ -78,7 +78,7 @@ async def whatsapp_webhook(request: Request):
     try:
         print("--> Chiamata a Groq...")
         chat_completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="gemma2-9b-it",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": testo_ricevuto}
