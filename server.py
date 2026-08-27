@@ -1,3 +1,4 @@
+
 import os
 import json
 import requests
@@ -81,9 +82,10 @@ async def whatsapp_webhook(request: Request):
     except Exception as e:
         testo_risposta = f"Errore elaborazione AI: {str(e)}"
 
+    # TwiML protetto con CDATA per evitare errori di parsing con caratteri speciali
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>{testo_risposta}</Message>
+    <Message><![CDATA[{testo_risposta}]]></Message>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 
