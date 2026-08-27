@@ -1,10 +1,10 @@
 import os
+import html
 import requests
 from fastapi import FastAPI, Request, Response
 from groq import Groq
-from twilio.twiml.messaging_response import MessagingResponse
 
-# Client Groq
+# Inizializza client Groq
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 app = FastAPI(title="TermoMaster AI Gateway")
@@ -34,6 +34,7 @@ Regole operative:
 """
 
 def get_best_model():
+    """Seleziona automaticamente il miglior modello chat disponibile su Groq"""
     try:
         models = [m.id for m in client.models.list().data]
         excluded = ["whisper", "allam", "orpheus", "guard", "embed", "safeguard", "vision"]
@@ -62,10 +63,10 @@ async def whatsapp_webhook(request: Request):
     print(f"--> [MESSAGGIO IN ARRIVO]: '{body}'")
     testo_ricevuto = body
 
-    # Trascrizione vocale da WhatsApp
+    # Gestione note vocali da WhatsApp
     if media_url and "audio" in media_type:
         try:
-            print("--> Elaborazione nota vocale...")
+            print("--> Elaborazione nota vocale in corso...")
             audio_resp = requests.get(media_url)
             temp_filename = "temp_audio.ogg"
             with open(temp_filename, "wb") as f:
@@ -84,10 +85,9 @@ async def whatsapp_webhook(request: Request):
             print(f"--> [ERRORE VOCALE]: {e}")
             testo_ricevuto = f"Errore vocale: {e}"
 
-    twiml_resp = MessagingResponse()
-
     if not testo_ricevuto or not testo_ricevuto.strip():
-        return Response(content=str(twiml_resp), media_type="application/xml")
+        empty_twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+        return Response(content=empty_twiml, media_type="application/xml; charset=utf-8")
 
     # Diagnosi AI con Groq
     model_name = get_best_model()
@@ -100,14 +100,19 @@ async def whatsapp_webhook(request: Request):
             ]
         )
         testo_risposta = chat_completion.choices[0].message.content
-        print(f"--> [DIAGNOSI GENERATA]:\n{testo_risposta}")
+        print(f"--> [DIAGNOSI AI GENERATA]:\n{testo_risposta}")
     except Exception as e:
         print(f"--> [ERRORE GROQ]: {e}")
         testo_risposta = f"Errore AI: {str(e)}"
 
-    # Risposta ufficiale TwiML (nessun ContentSid richiesto)
-    twiml_resp.message(testo_risposta)
-    return Response(content=str(twiml_resp), media_type="application/xml")
+    # Restituzione TwiML XML valido con codifica UTF-8 per Twilio
+    escaped_reply = html.escape(testo_risposta)
+    twiml_output = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>{escaped_reply}</Message>
+</Response>"""
+
+    return Response(content=twiml_output, media_type="application/xml; charset=utf-8")
 
 if __name__ == "__main__":
     import uvicorn
