@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import requests
 from fastapi import FastAPI, Request, Response
 from groq import Groq
@@ -10,13 +11,26 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 app = FastAPI(title="TermoMaster AI Gateway")
 
 SYSTEM_PROMPT = """
-Sei TermoMaster AI, assistente tecnico per frigoristi, bruciatoristi e caldaisti.
-Rispondi in modo conciso, pratico e diretto:
-- [DIAGNOSI]: Causa probabile in 1-2 frasi.
-- [CONTROLLI PRIORITARI]:
-  1. Test rapido/elettrico.
-  2. Controllo meccanico/idraulico.
-  3. Verifica invasiva.
+Sei TermoMaster AI, assistente tecnico diagnostico dedicato per frigoristi, bruciatoristi e caldaisti.
+Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione del guasto.
+
+Regole operative:
+1. Refrigerazione / Pompe di Calore:
+   - Analizza sempre Surriscaldamento (SH), Sottoraffreddamento (SC) e Delta T.
+   - Bassa asp + Alto SH = Sottocarica, perdita o valvola termostatica/elettronica strozzata.
+   - Alta asp + Basso SH = Sovralimentazione evaporatore o compressore inefficiente.
+   - Alta condensazione + Alto Delta T idraulico = Scambio insufficiente / scarsa portata acqua.
+
+2. Bruciatori / Combustione:
+   - Analizza fumi: O2, CO2, CO, rendimento e lambda.
+   - Monitora segnale fiamma (uA), pressione ugello/gas ed elettrodi.
+
+3. Formato Risposte Diagnostiche:
+   - [DIAGNOSI]: Causa probabile in 1-2 frasi.
+   - [CONTROLLI PRIORITARI]:
+     1. Test più rapido (non invasivo / elettrico).
+     2. Verifica meccanica / idraulica.
+     3. Intervento invasivo (solo se i primi falliscono).
 """
 
 @app.get("/")
@@ -34,10 +48,10 @@ async def whatsapp_webhook(request: Request):
     
     testo_ricevuto = body
 
-    # Gestione note vocali
+    # Gestione note vocali da WhatsApp
     if media_url and "audio" in media_type:
         try:
-            print("--> Scaricamento nota vocale...")
+            print("--> Scaricamento ed elaborazione audio...")
             audio_resp = requests.get(media_url)
             temp_filename = "temp_audio.ogg"
             with open(temp_filename, "wb") as f:
@@ -55,35 +69,34 @@ async def whatsapp_webhook(request: Request):
             print(f"--> [VOCALE TRASCRITTO]: {testo_ricevuto}")
         except Exception as e:
             print(f"--> [ERRORE AUDIO]: {e}")
-            testo_ricevuto = f"Errore audio: {e}"
+            testo_ricevuto = f"Errore trascrizione vocale: {e}"
 
     if not testo_ricevuto or not testo_ricevuto.strip():
-        print("--> Messaggio vuoto, skip.")
-        return Response(content="<Response></Response>", media_type="text/xml")
+        return Response(content="<Response></Response>", media_type="application/xml")
 
-    # Elaborazione Groq Llama 3
+    # Chiamata Groq con modello supportato
     try:
         print("--> Chiamata a Groq...")
         chat_completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-70b-versatile",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": testo_ricevuto}
             ]
         )
         testo_risposta = chat_completion.choices[0].message.content
-        print(f"--> [RISPOSTA AI GENERATA]:\n{testo_risposta}")
+        print(f"--> [RISPOSTA GENERATA]:\n{testo_risposta}")
     except Exception as e:
         print(f"--> [ERRORE GROQ]: {e}")
         testo_risposta = f"Errore AI: {str(e)}"
 
-    # TwiML standard compatibile WhatsApp
-    twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+    # Costruzione TwiML XML valido
+    escaped_reply = html.escape(testo_risposta)
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>{testo_risposta}</Message>
+    <Message>{escaped_reply}</Message>
 </Response>"""
-
-    return Response(content=twiml_response, media_type="text/xml")
+    return Response(content=twiml, media_type="application/xml")
 
 if __name__ == "__main__":
     import uvicorn
