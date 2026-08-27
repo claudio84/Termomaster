@@ -1,5 +1,4 @@
 import os
-import json
 import html
 import requests
 from fastapi import FastAPI, Request, Response
@@ -33,9 +32,27 @@ Regole operative:
      3. Intervento invasivo (solo se i primi falliscono).
 """
 
+def get_active_chat_model():
+    """Seleziona dinamicamente il miglior modello attivo disponibile nell'account Groq"""
+    preferred_models = [
+        "llama-3.2-3b-preview",
+        "llama-3.2-1b-preview",
+        "mixtral-8x7b-32768",
+        "llama3-70b-8192",
+        "llama3-8b-8192"
+    ]
+    try:
+        available = [m.id for m in client.models.list().data if "whisper" not in m.id]
+        for model in preferred_models:
+            if model in available:
+                return model
+        return available[0] if available else "llama-3.2-3b-preview"
+    except Exception:
+        return "llama-3.2-3b-preview"
+
 @app.get("/")
 def home():
-    return {"status": "TermoMaster AI Online"}
+    return {"status": "TermoMaster AI Online", "active_model": get_active_chat_model()}
 
 @app.post("/whatsapp-webhook")
 async def whatsapp_webhook(request: Request):
@@ -45,13 +62,12 @@ async def whatsapp_webhook(request: Request):
     media_type = form_data.get("MediaContentType0", "")
     
     print(f"--> [MESSAGGIO RICEVUTO]: '{body}' | Media: {media_url}")
-    
     testo_ricevuto = body
 
-    # Gestione note vocali da WhatsApp
+    # Trascrizione note vocali
     if media_url and "audio" in media_type:
         try:
-            print("--> Scaricamento ed elaborazione audio...")
+            print("--> Scaricamento ed elaborazione nota vocale...")
             audio_resp = requests.get(media_url)
             temp_filename = "temp_audio.ogg"
             with open(temp_filename, "wb") as f:
@@ -74,11 +90,12 @@ async def whatsapp_webhook(request: Request):
     if not testo_ricevuto or not testo_ricevuto.strip():
         return Response(content="<Response></Response>", media_type="application/xml")
 
-    # Chiamata Groq con modello attivo
+    # Diagnosi AI con modello rilevato automaticamente
+    model_to_use = get_active_chat_model()
+    print(f"--> Chiamata a Groq con modello: {model_to_use}...")
     try:
-        print("--> Chiamata a Groq...")
         chat_completion = client.chat.completions.create(
-            model="gemma2-9b-it",
+            model=model_to_use,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": testo_ricevuto}
@@ -90,7 +107,7 @@ async def whatsapp_webhook(request: Request):
         print(f"--> [ERRORE GROQ]: {e}")
         testo_risposta = f"Errore AI: {str(e)}"
 
-    # TwiML XML valido
+    # Risposta TwiML per WhatsApp
     escaped_reply = html.escape(testo_risposta)
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
