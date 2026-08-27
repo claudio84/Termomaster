@@ -2,37 +2,33 @@ import os
 import requests
 from fastapi import FastAPI, Request, Response
 from groq import Groq
-from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
 
 # Client Groq
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-# Client Twilio (invio diretto su WhatsApp)
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 app = FastAPI(title="TermoMaster AI Gateway")
 
 SYSTEM_PROMPT = """
 Sei TermoMaster AI, assistente tecnico diagnostico per frigoristi, bruciatoristi e caldaisti.
-Rispondi SEMPRE ed ESCLUSIVAMENTE in italiano.
-Parli come un tecnico senior esperto: conciso, pratico, orientato alla risoluzione del guasto.
+Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana.
+Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione del guasto.
 
 Regole operative:
 1. Refrigerazione / Pompe di Calore:
    - Analizza Surriscaldamento (SH), Sottoraffreddamento (SC) e Delta T.
    - Bassa asp + Alto SH = Sottocarica, perdita o valvola termostatica/elettronica strozzata.
    - Alta asp + Basso SH = Sovralimentazione evaporatore o compressore inefficiente.
-   - Alta condensazione + Alto Delta T idraulico = Scambio insufficiente / scarsa portata.
+   - Alta condensazione + Alto Delta T idraulico = Scambio insufficiente / scarsa portata acqua.
 
 2. Bruciatori / Combustione:
    - Analizza fumi: O2, CO2, CO, rendimento e lambda.
    - Monitora segnale fiamma (uA), pressione ugello/gas ed elettrodi.
 
-3. Formato Diagnostico:
+3. Formato Risposte Diagnostiche:
    - [DIAGNOSI]: Causa probabile in 1-2 frasi.
    - [CONTROLLI PRIORITARI]:
-     1. Test rapido non invasivo / elettrico.
+     1. Test più rapido (non invasivo / elettrico).
      2. Verifica meccanica / idraulica.
      3. Intervento invasivo (solo se i primi falliscono).
 """
@@ -60,15 +56,13 @@ def home():
 async def whatsapp_webhook(request: Request):
     form_data = await request.form()
     body = form_data.get("Body", "")
-    from_number = form_data.get("From", "")
-    to_number = form_data.get("To", "")
     media_url = form_data.get("MediaUrl0", None)
     media_type = form_data.get("MediaContentType0", "")
 
-    print(f"--> [RICEVUTO DA {from_number}]: '{body}'")
+    print(f"--> [MESSAGGIO IN ARRIVO]: '{body}'")
     testo_ricevuto = body
 
-    # Gestione vocali
+    # Trascrizione vocale da WhatsApp
     if media_url and "audio" in media_type:
         try:
             print("--> Elaborazione nota vocale...")
@@ -90,10 +84,12 @@ async def whatsapp_webhook(request: Request):
             print(f"--> [ERRORE VOCALE]: {e}")
             testo_ricevuto = f"Errore vocale: {e}"
 
-    if not testo_ricevuto or not testo_ricevuto.strip():
-        return Response(content="OK", status_code=200)
+    twiml_resp = MessagingResponse()
 
-    # Diagnosi AI
+    if not testo_ricevuto or not testo_ricevuto.strip():
+        return Response(content=str(twiml_resp), media_type="application/xml")
+
+    # Diagnosi AI con Groq
     model_name = get_best_model()
     try:
         chat_completion = client.chat.completions.create(
@@ -109,22 +105,9 @@ async def whatsapp_webhook(request: Request):
         print(f"--> [ERRORE GROQ]: {e}")
         testo_risposta = f"Errore AI: {str(e)}"
 
-    # Invio del messaggio tramite Twilio API
-    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and from_number and to_number:
-        try:
-            tw_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            invio = tw_client.messages.create(
-                body=testo_risposta,
-                from_=to_number,
-                to=from_number
-            )
-            print(f"--> [MESSAGGIO CONSEGNATO]: SID={invio.sid}")
-        except Exception as e:
-            print(f"--> [ERRORE INVIO TWILIO]: {e}")
-    else:
-        print("--> [ATTENZIONE]: Credenziali Twilio mancanti nelle variabili d'ambiente.")
-
-    return Response(content="OK", status_code=200)
+    # Risposta ufficiale TwiML (nessun ContentSid richiesto)
+    twiml_resp.message(testo_risposta)
+    return Response(content=str(twiml_resp), media_type="application/xml")
 
 if __name__ == "__main__":
     import uvicorn
