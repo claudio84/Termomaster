@@ -11,6 +11,7 @@ app = FastAPI(title="TermoMaster AI Gateway")
 
 SYSTEM_PROMPT = """
 Sei TermoMaster AI, assistente tecnico diagnostico dedicato per frigoristi, bruciatoristi e caldaisti.
+Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana.
 Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione del guasto.
 
 Regole operative:
@@ -27,32 +28,38 @@ Regole operative:
 3. Formato Risposte Diagnostiche:
    - [DIAGNOSI]: Causa probabile in 1-2 frasi.
    - [CONTROLLI PRIORITARI]:
-     1. Test più rapido (non invasivo / elettrico).
+     1. Test rapido non invasivo / elettrico.
      2. Verifica meccanica / idraulica.
      3. Intervento invasivo (solo se i primi falliscono).
 """
 
-def get_active_chat_model():
-    """Seleziona dinamicamente il miglior modello attivo disponibile nell'account Groq"""
-    preferred_models = [
-        "llama-3.2-3b-preview",
-        "llama-3.2-1b-preview",
-        "mixtral-8x7b-32768",
-        "llama3-70b-8192",
-        "llama3-8b-8192"
-    ]
+def get_best_model():
+    """Identifica ed estrae il miglior modello Llama/Mistral attivo su Groq"""
     try:
-        available = [m.id for m in client.models.list().data if "whisper" not in m.id]
-        for model in preferred_models:
-            if model in available:
-                return model
-        return available[0] if available else "llama-3.2-3b-preview"
-    except Exception:
-        return "llama-3.2-3b-preview"
+        models = [m.id for m in client.models.list().data]
+        # Esclude modelli non adatti alla chat tecnica in italiano
+        excluded = ["whisper", "allam", "orpheus", "guard", "embed", "safeguard", "vision"]
+        valid = [m for m in models if not any(x in m.lower() for x in excluded)]
+        
+        # Cerca prima modelli Llama o Mixtral
+        for m in valid:
+            if "llama" in m.lower() and "8b" in m.lower():
+                return m
+        for m in valid:
+            if "llama" in m.lower():
+                return m
+        for m in valid:
+            if "mixtral" in m.lower() or "qwen" in m.lower():
+                return m
+                
+        return valid[0] if valid else "llama3-8b-8192"
+    except Exception as e:
+        print(f"--> Fallback modello: {e}")
+        return "llama3-8b-8192"
 
 @app.get("/")
 def home():
-    return {"status": "TermoMaster AI Online", "active_model": get_active_chat_model()}
+    return {"status": "TermoMaster AI Online", "active_model": get_best_model()}
 
 @app.post("/whatsapp-webhook")
 async def whatsapp_webhook(request: Request):
@@ -61,13 +68,13 @@ async def whatsapp_webhook(request: Request):
     media_url = form_data.get("MediaUrl0", None)
     media_type = form_data.get("MediaContentType0", "")
     
-    print(f"--> [MESSAGGIO RICEVUTO]: '{body}' | Media: {media_url}")
+    print(f"--> [MESSAGGIO IN ARRIVO]: '{body}'")
     testo_ricevuto = body
 
-    # Trascrizione note vocali
+    # Trascrizione vocale da WhatsApp
     if media_url and "audio" in media_type:
         try:
-            print("--> Scaricamento ed elaborazione nota vocale...")
+            print("--> Elaborazione nota vocale...")
             audio_resp = requests.get(media_url)
             temp_filename = "temp_audio.ogg"
             with open(temp_filename, "wb") as f:
@@ -85,14 +92,15 @@ async def whatsapp_webhook(request: Request):
             print(f"--> [VOCALE TRASCRITTO]: {testo_ricevuto}")
         except Exception as e:
             print(f"--> [ERRORE AUDIO]: {e}")
-            testo_ricevuto = f"Errore trascrizione vocale: {e}"
+            testo_ricevuto = f"Errore vocale: {e}"
 
     if not testo_ricevuto or not testo_ricevuto.strip():
-        return Response(content="<Response></Response>", media_type="application/xml")
+        empty_twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+        return Response(content=empty_twiml, media_type="application/xml; charset=utf-8")
 
-    # Diagnosi AI con modello rilevato automaticamente
-    model_to_use = get_active_chat_model()
-    print(f"--> Chiamata a Groq con modello: {model_to_use}...")
+    # Generazione diagnosi Groq
+    model_to_use = get_best_model()
+    print(f"--> Modello in uso: {model_to_use}")
     try:
         chat_completion = client.chat.completions.create(
             model=model_to_use,
@@ -102,18 +110,19 @@ async def whatsapp_webhook(request: Request):
             ]
         )
         testo_risposta = chat_completion.choices[0].message.content
-        print(f"--> [RISPOSTA GENERATA]:\n{testo_risposta}")
+        print(f"--> [RISPOSTA AI GENERATA]:\n{testo_risposta}")
     except Exception as e:
         print(f"--> [ERRORE GROQ]: {e}")
-        testo_risposta = f"Errore AI: {str(e)}"
+        testo_risposta = f"Errore durante l'elaborazione AI: {str(e)}"
 
-    # Risposta TwiML per WhatsApp
+    # Costruzione TwiML compatibile con caratteri UTF-8
     escaped_reply = html.escape(testo_risposta)
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    twiml_output = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Message>{escaped_reply}</Message>
 </Response>"""
-    return Response(content=twiml, media_type="application/xml")
+
+    return Response(content=twiml_output, media_type="application/xml; charset=utf-8")
 
 if __name__ == "__main__":
     import uvicorn
