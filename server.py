@@ -14,21 +14,20 @@ Sei TermoMaster AI, assistente tecnico diagnostico dedicato per frigoristi, bruc
 Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana.
 Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione rapida del guasto.
 
-Regole operative:
-1. Refrigerazione / Pompe di Calore:
-   - Analizza sempre Surriscaldamento (SH), Sottoraffreddamento (SC) e Delta T.
+Regole operative fondamentali:
+1. Gestione "Bassa Pressione" su Pompe di Calore Aria-Acqua:
+   - Se l'utente menziona "bassa pressione" senza specificare, distingui SEMPRE chiaramente tra:
+     a) Circuito Idraulico (Acqua): Mancanza acqua nell'impianto (manometro < 1 bar, errore pressostato acqua). Causa: rubinetto di carico chiuso, perdita nell'impianto, vaso d'espansione scarico.
+     b) Circuito Frigorifero (Gas): Bassa pressione di aspirazione (richiede analisi di Surriscaldamento SH e Sottoraffreddamento SC).
+
+2. Refrigerazione / Pompe di Calore (Gas):
    - Bassa asp + Alto SH = Sottocarica, perdita o valvola termostatica/elettronica strozzata.
    - Alta asp + Basso SH = Sovralimentazione evaporatore o compressore inefficiente.
-   - Alta condensazione + Alto Delta T idraulico = Scambio insufficiente / scarsa portata acqua.
-
-2. Bruciatori / Combustione:
-   - Analizza fumi: O2, CO2, CO, rendimento e lambda.
-   - Monitora segnale fiamma (uA), pressione ugello/gas ed elettrodi.
 
 3. Formato Risposte Diagnostiche:
-   - [DIAGNOSI]: Causa probabile in 1-2 frasi.
+   - [DIAGNOSI]: Causa probabile in 1-2 frasi chiare.
    - [CONTROLLI PRIORITARI]:
-     1. Test più rapido (non invasivo / elettrico).
+     1. Test più rapido (non invasivo / elettrico o verifica manometro acqua).
      2. Verifica meccanica / idraulica.
      3. Intervento invasivo (solo se i primi falliscono).
 """
@@ -108,9 +107,11 @@ def serve_ui():
         header h1 { font-size: 1.15rem; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; }
         header span { font-size: 0.75rem; background: #0284c7; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
         #chat-window { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-        .msg { max-width: 88%; padding: 12px 16px; border-radius: 14px; font-size: 0.95rem; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
-        .user { align-self: flex-end; background: #0284c7; color: white; border-bottom-right-radius: 2px; }
+        .msg { max-width: 90%; padding: 14px 16px; border-radius: 14px; font-size: 0.95rem; line-height: 1.6; word-wrap: break-word; }
+        .user { align-self: flex-end; background: #0284c7; color: white; border-bottom-right-radius: 2px; white-space: pre-wrap; }
         .bot { align-self: flex-start; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-bottom-left-radius: 2px; }
+        .bot strong { color: #38bdf8; }
+        .diagnostic-header { color: #38bdf8; font-weight: bold; display: block; margin-top: 8px; font-size: 1rem; border-bottom: 1px solid #334155; padding-bottom: 2px; }
         .transcript-tag { font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; font-style: italic; }
         #input-bar { background: #1e293b; padding: 10px 12px; border-top: 1px solid #334155; display: flex; gap: 8px; align-items: center; }
         #text-input { flex: 1; background: #0f172a; border: 1px solid #334155; color: white; padding: 10px 14px; border-radius: 24px; font-size: 0.95rem; outline: none; }
@@ -150,13 +151,34 @@ def serve_ui():
         let mediaRecorder = null;
         let audioChunks = [];
 
+        function formatBotMessage(text) {
+            let safe = text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+            
+            // Grassetto markdown
+            safe = safe.replace(/\\*\\*(.*?)\\*\\*/g, "<strong>$1</strong>");
+            
+            // Titoli diagnostici con spaziatura e stile pulito
+            safe = safe.replace(/\\[(.*?)\\]/g, '<span class="diagnostic-header">[$1]</span>');
+            
+            // A capo
+            safe = safe.replace(/\\n/g, "<br>");
+            return safe;
+        }
+
         function appendMessage(text, sender, isVoice = false) {
             const div = document.createElement('div');
             div.className = `msg ${sender}`;
-            if (isVoice && sender === 'user') {
-                div.innerHTML = `<div class="transcript-tag">🎤 Vocale trascritto:</div>` + text;
+            if (sender === 'user') {
+                if (isVoice) {
+                    div.innerHTML = `<div class="transcript-tag">🎤 Vocale trascritto:</div>` + text.replace(/\\n/g, '<br>');
+                } else {
+                    div.innerText = text;
+                }
             } else {
-                div.innerText = text;
+                div.innerHTML = formatBotMessage(text);
             }
             chatWindow.appendChild(div);
             chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -202,7 +224,6 @@ def serve_ui():
         sendBtn.addEventListener('click', sendText);
         textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
 
-        // Gestione microfono
         micBtn.addEventListener('click', async () => {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
