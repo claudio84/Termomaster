@@ -1,4 +1,5 @@
 import os
+import re
 import io
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -56,7 +57,11 @@ def query_groq(prompt_text: str) -> str:
             {"role": "user", "content": prompt_text}
         ]
     )
-    return completion.choices[0].message.content
+    raw_text = completion.choices[0].message.content
+    
+    # Rimuove completamente eventuali blocchi di pensiero <think>...</think>
+    cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
+    return cleaned_text
 
 class TextRequest(BaseModel):
     message: str
@@ -111,7 +116,7 @@ def serve_ui():
         .user { align-self: flex-end; background: #0284c7; color: white; border-bottom-right-radius: 2px; white-space: pre-wrap; }
         .bot { align-self: flex-start; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-bottom-left-radius: 2px; }
         .bot strong { color: #38bdf8; }
-        .diagnostic-header { color: #38bdf8; font-weight: bold; display: block; margin-top: 8px; font-size: 1rem; border-bottom: 1px solid #334155; padding-bottom: 2px; }
+        .diagnostic-header { color: #38bdf8; font-weight: bold; display: block; margin-top: 10px; font-size: 1rem; border-bottom: 1px solid #334155; padding-bottom: 3px; }
         .transcript-tag { font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; font-style: italic; }
         #input-bar { background: #1e293b; padding: 10px 12px; border-top: 1px solid #334155; display: flex; gap: 8px; align-items: center; }
         #text-input { flex: 1; background: #0f172a; border: 1px solid #334155; color: white; padding: 10px 14px; border-radius: 24px; font-size: 0.95rem; outline: none; }
@@ -160,8 +165,9 @@ def serve_ui():
             // Grassetto markdown
             safe = safe.replace(/\\*\\*(.*?)\\*\\*/g, "<strong>$1</strong>");
             
-            // Titoli diagnostici con spaziatura e stile pulito
-            safe = safe.replace(/\\[(.*?)\\]/g, '<span class="diagnostic-header">[$1]</span>');
+            // Pulisce eventuali spazi o a capo errati prima dei tag diagnostici ed evidenzia le intestazioni
+            safe = safe.replace(/&lt;\\s*([A-Z_]+)\\s*&gt;/g, '<span class="diagnostic-header">[$1]</span>');
+            safe = safe.replace(/\\s*:\\s*(<span class=\"diagnostic-header\">)/g, '$1'); // Rimuove i due punti isolati prima delle intestazioni
             
             // A capo
             safe = safe.replace(/\\n/g, "<br>");
@@ -238,7 +244,7 @@ def serve_ui():
 
                 mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
                 mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm'}`);
                     stream.getTracks().forEach(t => t.stop());
                     
                     showLoading();
