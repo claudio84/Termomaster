@@ -1,22 +1,22 @@
 import os
-import html
-import requests
-from fastapi import FastAPI, Request, Response
+import io
+from fastapi import FastAPI, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse
 from groq import Groq
+from pydantic import BaseModel
 
-# Inizializza client Groq
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-app = FastAPI(title="TermoMaster AI Gateway")
+app = FastAPI(title="TermoMaster AI")
 
 SYSTEM_PROMPT = """
-Sei TermoMaster AI, assistente tecnico diagnostico per frigoristi, bruciatoristi e caldaisti.
+Sei TermoMaster AI, assistente tecnico diagnostico dedicato per frigoristi, bruciatoristi e caldaisti.
 Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana.
-Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione del guasto.
+Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione rapida del guasto.
 
 Regole operative:
 1. Refrigerazione / Pompe di Calore:
-   - Analizza Surriscaldamento (SH), Sottoraffreddamento (SC) e Delta T.
+   - Analizza sempre Surriscaldamento (SH), Sottoraffreddamento (SC) e Delta T.
    - Bassa asp + Alto SH = Sottocarica, perdita o valvola termostatica/elettronica strozzata.
    - Alta asp + Basso SH = Sovralimentazione evaporatore o compressore inefficiente.
    - Alta condensazione + Alto Delta T idraulico = Scambio insufficiente / scarsa portata acqua.
@@ -34,7 +34,6 @@ Regole operative:
 """
 
 def get_best_model():
-    """Seleziona automaticamente il miglior modello chat disponibile su Groq"""
     try:
         models = [m.id for m in client.models.list().data]
         excluded = ["whisper", "allam", "orpheus", "guard", "embed", "safeguard", "vision"]
@@ -43,76 +42,215 @@ def get_best_model():
             if "llama" in m.lower() and "8b" in m.lower():
                 return m
         for m in valid:
-            if "qwen" in m.lower() or "llama" in m.lower():
+            if "llama" in m.lower() or "qwen" in m.lower():
                 return m
         return valid[0] if valid else "llama3-8b-8192"
     except Exception:
         return "llama3-8b-8192"
 
-@app.get("/")
-def home():
-    return {"status": "TermoMaster AI Online", "model": get_best_model()}
-
-@app.post("/whatsapp-webhook")
-async def whatsapp_webhook(request: Request):
-    form_data = await request.form()
-    body = form_data.get("Body", "")
-    media_url = form_data.get("MediaUrl0", None)
-    media_type = form_data.get("MediaContentType0", "")
-
-    print(f"--> [MESSAGGIO IN ARRIVO]: '{body}'")
-    testo_ricevuto = body
-
-    # Gestione note vocali da WhatsApp
-    if media_url and "audio" in media_type:
-        try:
-            print("--> Elaborazione nota vocale in corso...")
-            audio_resp = requests.get(media_url)
-            temp_filename = "temp_audio.ogg"
-            with open(temp_filename, "wb") as f:
-                f.write(audio_resp.content)
-            with open(temp_filename, "rb") as af:
-                trascrizione = client.audio.transcriptions.create(
-                    model="whisper-large-v3",
-                    file=(temp_filename, af.read()),
-                    language="it"
-                )
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
-            testo_ricevuto = trascrizione.text
-            print(f"--> [VOCALE TRASCRITTO]: {testo_ricevuto}")
-        except Exception as e:
-            print(f"--> [ERRORE VOCALE]: {e}")
-            testo_ricevuto = f"Errore vocale: {e}"
-
-    if not testo_ricevuto or not testo_ricevuto.strip():
-        empty_twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-        return Response(content=empty_twiml, media_type="application/xml; charset=utf-8")
-
-    # Diagnosi AI con Groq
+def query_groq(prompt_text: str) -> str:
     model_name = get_best_model()
+    completion = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt_text}
+        ]
+    )
+    return completion.choices[0].message.content
+
+class TextRequest(BaseModel):
+    message: str
+
+@app.post("/api/chat")
+async def chat_endpoint(req: TextRequest):
+    if not req.message.strip():
+        return JSONResponse({"reply": "Messaggio vuoto."})
     try:
-        chat_completion = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": testo_ricevuto}
-            ]
-        )
-        testo_risposta = chat_completion.choices[0].message.content
-        print(f"--> [DIAGNOSI AI GENERATA]:\n{testo_risposta}")
+        reply = query_groq(req.message)
+        return JSONResponse({"reply": reply})
     except Exception as e:
-        print(f"--> [ERRORE GROQ]: {e}")
-        testo_risposta = f"Errore AI: {str(e)}"
+        return JSONResponse({"reply": f"Errore diagnosi: {str(e)}"}, status_code=500)
 
-    # Restituzione TwiML XML valido con codifica UTF-8 per Twilio
-    escaped_reply = html.escape(testo_risposta)
-    twiml_output = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{escaped_reply}</Message>
-</Response>"""
+@app.post("/api/chat-audio")
+async def chat_audio_endpoint(file: UploadFile = File(...)):
+    try:
+        audio_bytes = await file.read()
+        transcription = client.audio.transcriptions.create(
+            model="whisper-large-v3",
+            file=(file.filename or "audio.webm", audio_bytes),
+            language="it"
+        )
+        user_text = transcription.text
+        if not user_text.strip():
+            return JSONResponse({"transcript": "", "reply": "Audio non comprensibile o muto."})
+        reply = query_groq(user_text)
+        return JSONResponse({"transcript": user_text, "reply": reply})
+    except Exception as e:
+        return JSONResponse({"reply": f"Errore elaborazione audio: {str(e)}"}, status_code=500)
 
-    return Response(content=twiml_output, media_type="application/xml; charset=utf-8")
+@app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    return """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TermoMaster AI</title>
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #0f172a; color: #f8fafc; display: flex; flex-direction: column; height: 100dvh; }
+        header { background: #1e293b; padding: 14px 18px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
+        header h1 { font-size: 1.15rem; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; }
+        header span { font-size: 0.75rem; background: #0284c7; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+        #chat-window { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+        .msg { max-width: 88%; padding: 12px 16px; border-radius: 14px; font-size: 0.95rem; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
+        .user { align-self: flex-end; background: #0284c7; color: white; border-bottom-right-radius: 2px; }
+        .bot { align-self: flex-start; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-bottom-left-radius: 2px; }
+        .transcript-tag { font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; font-style: italic; }
+        #input-bar { background: #1e293b; padding: 10px 12px; border-top: 1px solid #334155; display: flex; gap: 8px; align-items: center; }
+        #text-input { flex: 1; background: #0f172a; border: 1px solid #334155; color: white; padding: 10px 14px; border-radius: 24px; font-size: 0.95rem; outline: none; }
+        #text-input:focus { border-color: #38bdf8; }
+        button { border: none; outline: none; cursor: pointer; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        #send-btn { background: #38bdf8; color: #0f172a; }
+        #mic-btn { background: #334155; color: #f8fafc; }
+        #mic-btn.recording { background: #ef4444; animation: pulse 1.2s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .loading { display: flex; gap: 4px; padding: 12px 16px; }
+        .dot { width: 8px; height: 8px; background: #38bdf8; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
+        .dot:nth-child(1) { animation-delay: -0.32s; }
+        .dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1.0); } }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🔧 TermoMaster AI</h1>
+        <span>ONLINE</span>
+    </header>
+    <div id="chat-window">
+        <div class="msg bot">Pronto per la diagnosi. Scrivi i dati o premi il microfono per registrare una nota vocale dal cantiere.</div>
+    </div>
+    <div id="input-bar">
+        <button id="mic-btn" title="Registra vocale">🎤</button>
+        <input type="text" id="text-input" placeholder="Descrivi il guasto o parametri..." autocomplete="off">
+        <button id="send-btn" title="Invia">➤</button>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const textInput = document.getElementById('text-input');
+        const sendBtn = document.getElementById('send-btn');
+        const micBtn = document.getElementById('mic-btn');
+
+        let mediaRecorder = null;
+        let audioChunks = [];
+
+        function appendMessage(text, sender, isVoice = false) {
+            const div = document.createElement('div');
+            div.className = `msg ${sender}`;
+            if (isVoice && sender === 'user') {
+                div.innerHTML = `<div class="transcript-tag">🎤 Vocale trascritto:</div>` + text;
+            } else {
+                div.innerText = text;
+            }
+            chatWindow.appendChild(div);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            return div;
+        }
+
+        function showLoading() {
+            const div = document.createElement('div');
+            div.className = 'msg bot loading';
+            div.id = 'loading-dots';
+            div.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+            chatWindow.appendChild(div);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function hideLoading() {
+            const el = document.getElementById('loading-dots');
+            if (el) el.remove();
+        }
+
+        async function sendText() {
+            const text = textInput.value.trim();
+            if (!text) return;
+            textInput.value = '';
+            appendMessage(text, 'user');
+            showLoading();
+
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                const data = await res.json();
+                hideLoading();
+                appendMessage(data.reply, 'bot');
+            } catch (err) {
+                hideLoading();
+                appendMessage("Errore di connessione con il server.", 'bot');
+            }
+        }
+
+        sendBtn.addEventListener('click', sendText);
+        textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
+
+        // Gestione microfono
+        micBtn.addEventListener('click', async () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                micBtn.classList.remove('recording');
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    stream.getTracks().forEach(t => t.stop());
+                    
+                    showLoading();
+                    const formData = new FormData();
+                    formData.append('file', audioBlob, 'rec.webm');
+
+                    try {
+                        const res = await fetch('/api/chat-audio', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+                        hideLoading();
+                        if (data.transcript) {
+                            appendMessage(data.transcript, 'user', true);
+                        }
+                        appendMessage(data.reply, 'bot');
+                    } catch (err) {
+                        hideLoading();
+                        appendMessage("Errore durante l'invio del vocale.", 'bot');
+                    }
+                };
+
+                mediaRecorder.start();
+                micBtn.classList.add('recording');
+            } catch (err) {
+                alert("Permesso microfono non concesso o dispositivo non supportato.");
+            }
+        });
+    </script>
+</body>
+</html>
+    """
 
 if __name__ == "__main__":
     import uvicorn
