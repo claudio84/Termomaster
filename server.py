@@ -58,8 +58,6 @@ def query_groq(prompt_text: str) -> str:
         ]
     )
     raw_text = completion.choices[0].message.content
-    
-    # Rimuove completamente eventuali blocchi di pensiero <think>...</think>
     cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
     return cleaned_text
 
@@ -95,7 +93,7 @@ async def chat_audio_endpoint(file: UploadFile = File(...)):
 
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
-    return """
+    return r"""
 <!DOCTYPE html>
 <html lang="it">
 <head>
@@ -162,15 +160,9 @@ def serve_ui():
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;");
             
-            // Grassetto markdown
-            safe = safe.replace(/\\*\\*(.*?)\\*\\*/g, "<strong>$1</strong>");
-            
-            // Pulisce eventuali spazi o a capo errati prima dei tag diagnostici ed evidenzia le intestazioni
-            safe = safe.replace(/&lt;\\s*([A-Z_]+)\\s*&gt;/g, '<span class="diagnostic-header">[$1]</span>');
-            safe = safe.replace(/\\s*:\\s*(<span class=\"diagnostic-header\">)/g, '$1'); // Rimuove i due punti isolati prima delle intestazioni
-            
-            // A capo
-            safe = safe.replace(/\\n/g, "<br>");
+            safe = safe.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+            safe = safe.replace(/&lt;\s*([A-Z_]+)\s*&gt;/g, '<span class="diagnostic-header">[$1]</span>');
+            safe = safe.replace(/\n/g, "<br>");
             return safe;
         }
 
@@ -179,7 +171,7 @@ def serve_ui():
             div.className = `msg ${sender}`;
             if (sender === 'user') {
                 if (isVoice) {
-                    div.innerHTML = `<div class="transcript-tag">🎤 Vocale trascritto:</div>` + text.replace(/\\n/g, '<br>');
+                    div.innerHTML = `<div class="transcript-tag">🎤 Vocale trascritto:</div>` + text.replace(/\n/g, '<br>');
                 } else {
                     div.innerText = text;
                 }
@@ -244,7 +236,7 @@ def serve_ui():
 
                 mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
                 mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm'}`);
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                     stream.getTracks().forEach(t => t.stop());
                     
                     showLoading();
