@@ -12,41 +12,52 @@ app = FastAPI(title="TermoMaster AI")
 
 SYSTEM_PROMPT = """
 Sei TermoMaster AI, assistente tecnico diagnostico dedicato per frigoristi, bruciatoristi e caldaisti.
-Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana.
-Parli come un tecnico senior esperto: conciso, pratico, zero convenevoli e orientato alla risoluzione rapida del guasto.
+Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana corretta, fluida e professionale.
+Parli come un tecnico senior esperto: conciso, pratico, autorevole, zero convenevoli e orientato alla risoluzione rapida del guasto.
 
 Regole operative fondamentali:
 1. Gestione "Bassa Pressione" su Pompe di Calore Aria-Acqua:
    - Se l'utente menziona "bassa pressione" senza specificare, distingui SEMPRE chiaramente tra:
-     a) Circuito Idraulico (Acqua): Mancanza acqua nell'impianto (manometro < 1 bar, errore pressostato acqua). Causa: rubinetto di carico chiuso, perdita nell'impianto, vaso d'espansione scarico.
-     b) Circuito Frigorifero (Gas): Bassa pressione di aspirazione (richiede analisi di Surriscaldamento SH e Sottoraffreddamento SC).
+     a) Circuito Idraulico (Acqua): Mancanza d'acqua nell'impianto (manometro impianto < 1 bar, allarme pressostato acqua). Cause tipiche: rubinetto di carico chiuso, perdite visibili o vaso d'espansione scarico/bucato.
+     b) Circuito Frigorifero (Gas): Bassa pressione di aspirazione (richiede verifica di Surriscaldamento SH e Sottoraffreddamento SC).
 
-2. Refrigerazione / Pompe di Calore (Gas):
-   - Bassa asp + Alto SH = Sottocarica, perdita o valvola termostatica/elettronica strozzata.
-   - Alta asp + Basso SH = Sovralimentazione evaporatore o compressore inefficiente.
+2. Refrigerazione / Pompe di Calore (Circuito Gas):
+   - Bassa aspirazione + Alto SH = Sottocarica di refrigerante, perdita nel circuito o valvola termostatica/elettronica strozzata.
+   - Alta aspirazione + Basso SH = Sovralimentazione dell'evaporatore o compressione inefficiente.
 
-3. Formato Risposte Diagnostiche:
-   - [DIAGNOSI]: Causa probabile in 1-2 frasi chiare.
+3. Bruciatori / Combustione:
+   - Analisi fumi: O2, CO2, CO, rendimento e lambda.
+   - Verifica segnale fiamma (uA), pressione ugello/rete ed elettrodi d'accensione/ionizzazione.
+
+4. Formato Risposte Diagnostiche:
+   - [DIAGNOSI]: Causa probabile e spiegazione tecnica in 1-2 frasi chiare.
    - [CONTROLLI PRIORITARI]:
-     1. Test più rapido (non invasivo / elettrico o verifica manometro acqua).
+     1. Test più rapido (non invasivo / elettrico o verifica manometri/pressioni di base).
      2. Verifica meccanica / idraulica.
-     3. Intervento invasivo (solo se i primi falliscono).
+     3. Intervento invasivo (solo se i controlli precedenti risultano regolari).
 """
 
 def get_best_model():
+    """Seleziona il modello Llama 70B per la massima accuratezza linguistica e tecnica"""
     try:
         models = [m.id for m in client.models.list().data]
         excluded = ["whisper", "allam", "orpheus", "guard", "embed", "safeguard", "vision"]
         valid = [m for m in models if not any(x in m.lower() for x in excluded)]
+        
+        # 1. Cerca prima i modelli Llama 70B (massima qualità in italiano)
         for m in valid:
-            if "llama" in m.lower() and "8b" in m.lower():
+            if "llama" in m.lower() and "70b" in m.lower():
+                return m
+        # 2. Cerca altri modelli da 70B o Llama
+        for m in valid:
+            if "70b" in m.lower():
                 return m
         for m in valid:
-            if "llama" in m.lower() or "qwen" in m.lower():
+            if "llama-3" in m.lower():
                 return m
-        return valid[0] if valid else "llama3-8b-8192"
+        return valid[0] if valid else "llama-3.3-70b-versatile"
     except Exception:
-        return "llama3-8b-8192"
+        return "llama-3.3-70b-versatile"
 
 def query_groq(prompt_text: str) -> str:
     model_name = get_best_model()
@@ -55,7 +66,8 @@ def query_groq(prompt_text: str) -> str:
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt_text}
-        ]
+        ],
+        temperature=0.2  # Bassa temperatura = risposte precise, rigorose e senza allucinazioni
     )
     raw_text = completion.choices[0].message.content
     cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
@@ -161,7 +173,7 @@ def serve_ui():
                 .replace(/>/g, "&gt;");
             
             safe = safe.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-            safe = safe.replace(/&lt;\s*([A-Z_]+)\s*&gt;/g, '<span class="diagnostic-header">[$1]</span>');
+            safe = safe.replace(/\[([A-Z\s_]+)\]/g, '<span class="diagnostic-header">[$1]</span>');
             safe = safe.replace(/\n/g, "<br>");
             return safe;
         }
