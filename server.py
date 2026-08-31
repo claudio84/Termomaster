@@ -3,7 +3,6 @@ import re
 import io
 import json
 import math
-from collections import Counter
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 from groq import Groq
@@ -41,7 +40,7 @@ def chunk_text(text: str, chunk_size: int = 350, overlap: int = 50):
         i += chunk_size - overlap
     return chunks
 
-def search_kb(query: str, top_k: int = 4) -> str:
+def search_kb(query: str, top_k: int = 5) -> str:
     kb = load_kb()
     if not kb:
         return ""
@@ -55,16 +54,20 @@ def search_kb(query: str, top_k: int = 4) -> str:
         content = item.get("text", "")
         source = item.get("source", "Manuale")
         page = item.get("page", None)
+        item_type = item.get("type", "pdf")
         
         content_lower = content.lower()
         score = 0
         for token in query_tokens:
             count = content_lower.count(token)
             if count > 0:
-                score += (1 + math.log(count)) * (1.5 if token.isdigit() or len(token) > 5 else 1.0)
+                # Dà peso doppio alle esperienze di cantiere dirette del tecnico
+                multiplier = 2.5 if item_type == "esperienza_campo" else 1.0
+                score += (1 + math.log(count)) * (1.5 if token.isdigit() or len(token) > 5 else 1.0) * multiplier
         
         if score > 0:
-            header_src = f"[{source}" + (f" - Pag. {page}" if page else "") + "]"
+            tag = "🛠️ ESPERIENZA DI CANTIERE PRECEDENTE" if item_type == "esperienza_campo" else f"MANUALE/LEZIONE: {source}"
+            header_src = f"[{tag}" + (f" - Pag. {page}" if page else "") + "]"
             scored_chunks.append((score, f"{header_src}\n{content}"))
             
     scored_chunks.sort(key=lambda x: x[0], reverse=True)
@@ -79,28 +82,31 @@ Rispondi SEMPRE ed ESCLUSIVAMENTE in lingua italiana corretta, fluida e professi
 Parli come un tecnico senior esperto: conciso, pratico, autorevole, zero convenevoli e orientato alla risoluzione rapida del guasto.
 
 Regole operative fondamentali:
-1. Gestione "Bassa Pressione" su Pompe di Calore Aria-Acqua:
+1. Auto-apprendimento e Memorizzazione Interventi di Cantiere:
+   - Se l'utente ti comunica come ha risolto un guasto (es. "Ho risolto: era...", "Alla fine il problema era...", "Salva questo caso: ..."), devi:
+     1. Confermare la memorizzazione con un breve riepilogo (Modello, Problema riscontrato, Causa reale e Soluzione).
+     2. Aggiungere OBBLIGATORIAMENTE alla fine della risposta il blocco di salvataggio nel seguente formato esatto:
+        <<<SALVA_INTERVENTO: {"modello": "Nome/Modello", "guasto": "Sintomo o errore", "soluzione": "Causa e soluzione reale applicata"}>>>
+
+2. Gestione "Bassa Pressione" su Pompe di Calore Aria-Acqua:
    - Se l'utente menziona "bassa pressione" senza specificare, distingui SEMPRE chiaramente tra:
-     a) Circuito Idraulico (Acqua): Mancanza d'acqua nell'impianto (manometro impianto < 1 bar, allarme pressostato acqua). Cause tipiche: rubinetto di carico chiuso, perdite visibili o vaso d'espansione scarico/bucato.
-     b) Circuito Frigorifero (Gas): Bassa pressione di aspirazione (richiede verifica di Surriscaldamento SH e Sottoraffreddamento SC).
+     a) Circuito Idraulico (Acqua): Mancanza d'acqua nell'impianto (manometro impianto < 1 bar, allarme pressostato acqua).
+     b) Circuito Frigorifero (Gas): Bassa pressione di aspirazione (richiede verifica di SH e SC).
 
-2. Refrigerazione / Pompe di Calore (Circuito Gas):
-   - Bassa aspirazione + Alto SH = Sottocarica di refrigerante, perdita nel circuito o valvola termostatica/elettronica strozzata.
-   - Alta aspirazione + Basso SH = Sovralimentazione dell'evaporatore o compressione inefficiente.
+3. Refrigerazione / Bruciatori:
+   - Bassa asp + Alto SH = Sottocarica, perdita o valvola strozzata.
+   - Alta asp + Basso SH = Sovralimentazione o compressore inefficiente.
+   - Bruciatori: analisi combustione (O2, CO2, lambda, ppm CO) e segnale ionizzazione.
 
-3. Bruciatori / Combustione:
-   - Analisi fumi: O2, CO2, CO, rendimento e lambda.
-   - Verifica segnale fiamma (uA), pressione ugello/rete ed elettrodi d'accensione/ionizzazione.
+4. Utilizzo delle Esperienze di Cantiere e Manuali:
+   - Se tra i dati trovi una "ESPERIENZA DI CANTIERE PRECEDENTE", citale con massima priorità: ricorda al tecnico che su quell'impianto/errore è già stata trovata quella specifica soluzione.
 
-4. Utilizzo Documentazione Tecnica (Se presente nel contesto):
-   - Cita esplicitamente le tabelle errori, i parametri, le curve e le procedure ufficiali descritte nei manuali caricati.
-
-5. Formato Risposte Diagnostiche:
-   - [DIAGNOSI]: Causa probabile e spiegazione tecnica in 1-2 frasi chiare.
+5. Formato Risposte Diagnostiche Ordinarie:
+   - [DIAGNOSI]: Causa probabile in 1-2 frasi chiare.
    - [CONTROLLI PRIORITARI]:
-     1. Test più rapido (non invasivo / elettrico o verifica manometri/pressioni di base).
+     1. Test più rapido (non invasivo / elettrico o verifica pressioni di base).
      2. Verifica meccanica / idraulica.
-     3. Intervento invasivo (solo se i controlli precedenti risultano regolari).
+     3. Intervento invasivo (solo se i primi falliscono).
 """
 
 def get_best_model():
@@ -121,12 +127,12 @@ def get_best_model():
 def query_groq(prompt_text: str) -> str:
     model_name = get_best_model()
     
-    # Ricerca nei PDF e registrazioni caricate
+    # Cerca nei manuali e negli interventi di cantiere salvati in precedenza
     context_docs = search_kb(prompt_text)
     
     system_instruction = BASE_SYSTEM_PROMPT
     if context_docs:
-        system_instruction += f"\n\nESTRATTI DAI MANUALI E LEZIONI CARICATE DALL'UTENTE:\n{context_docs}\n\nUsa prioritariamente questi dati ufficiali per rispondere."
+        system_instruction += f"\n\nDATABASE TECNICO (MANUALI ED ESPERIENZE DI CANTIERE SALVATE):\n{context_docs}\n\nUsa prioritariamente questi dati reali per guidare la diagnosi."
 
     completion = client.chat.completions.create(
         model=model_name,
@@ -138,6 +144,39 @@ def query_groq(prompt_text: str) -> str:
     )
     raw_text = completion.choices[0].message.content
     cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
+    
+    # Intercetta e salva l'esperienza di cantiere se generata
+    match = re.search(r'<<<SALVA_INTERVENTO:\s*({.*?})>>>', cleaned_text, flags=re.DOTALL)
+    if match:
+        try:
+            case_data = json.loads(match.group(1))
+            modello = case_data.get("modello", "Impianto generico")
+            guasto = case_data.get("guasto", "Guasto non specificato")
+            soluzione = case_data.get("soluzione", "Soluzione applicata")
+            
+            chunk_content = (
+                f"INTERVENTO DI CANTIERE RISOLTO\n"
+                f"Apparecchio/Modello: {modello}\n"
+                f"Guasto/Codice Errore: {guasto}\n"
+                f"Causa e Soluzione Effettiva: {soluzione}\n"
+                f"Esito: Risolto sul campo."
+            )
+            
+            kb = load_kb()
+            kb.append({
+                "source": f"Intervento: {modello}",
+                "page": None,
+                "text": chunk_content,
+                "type": "esperienza_campo"
+            })
+            save_kb(kb)
+            print(f"--> [MEMORIZZATO INTERVENTO SUL CAMPO]: {modello} - {guasto}")
+        except Exception as e:
+            print(f"--> Errore salvataggio intervento: {e}")
+            
+        # Rimuove il tag tecnico dalla risposta mostrata all'utente
+        cleaned_text = re.sub(r'<<<SALVA_INTERVENTO:\s*{.*?}>>>', '', cleaned_text, flags=re.DOTALL).strip()
+
     return cleaned_text
 
 # ==================== ENDPOINT API ====================
@@ -148,8 +187,13 @@ class TextRequest(BaseModel):
 @app.get("/api/kb-stats")
 def kb_stats():
     kb = load_kb()
-    unique_files = len(set(item.get("source", "") for item in kb))
-    return JSONResponse({"total_chunks": len(kb), "total_files": unique_files})
+    manuali = len(set(item.get("source", "") for item in kb if item.get("type") != "esperienza_campo"))
+    interventi = len([item for item in kb if item.get("type") == "esperienza_campo"])
+    return JSONResponse({
+        "total_chunks": len(kb),
+        "manuali_count": manuali,
+        "interventi_count": interventi
+    })
 
 @app.post("/api/chat")
 async def chat_endpoint(req: TextRequest):
@@ -185,7 +229,6 @@ async def upload_document_endpoint(file: UploadFile = File(...)):
     new_chunks = []
 
     try:
-        # File PDF
         if filename.lower().endswith(".pdf"):
             pdf_reader = PdfReader(io.BytesIO(content_bytes))
             for page_num, page in enumerate(pdf_reader.pages, start=1):
@@ -199,8 +242,6 @@ async def upload_document_endpoint(file: UploadFile = File(...)):
                             "text": c,
                             "type": "pdf"
                         })
-        
-        # File Audio / Registrazioni / Lezioni
         elif any(filename.lower().endswith(ext) for ext in [".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aac", ".webm", ".flac"]):
             transcription = client.audio.transcriptions.create(
                 model="whisper-large-v3",
@@ -218,7 +259,7 @@ async def upload_document_endpoint(file: UploadFile = File(...)):
                         "type": "audio"
                     })
         else:
-            return JSONResponse({"status": "error", "message": "Formato non supportato. Carica file PDF o Audio (.mp3, .m4a, .wav)."}, status_code=400)
+            return JSONResponse({"status": "error", "message": "Formato non supportato."}, status_code=400)
 
         if not new_chunks:
             return JSONResponse({"status": "warning", "message": f"Nessun testo estraibile da {filename}."}, status_code=200)
@@ -234,7 +275,7 @@ async def upload_document_endpoint(file: UploadFile = File(...)):
         })
 
     except Exception as e:
-        return JSONResponse({"status": "error", "message": f"Errore elaborazione {filename}: {str(e)}"}, status_code=500)
+        return JSONResponse({"status": "error", "message": f"Errore elaborazione: {str(e)}"}, status_code=500)
 
 # ==================== INTERFACCIA WEB ====================
 
@@ -285,20 +326,20 @@ def serve_ui():
     <header>
         <div class="header-title">
             <h1>🔧 TermoMaster AI</h1>
-            <small id="kb-info">📚 Memoria: 0 file</small>
+            <small id="kb-info">📚 Memoria: 0 manuali | 🛠️ 0 interventi</small>
         </div>
         <span class="badge">ONLINE</span>
     </header>
     
     <div id="chat-window">
-        <div class="msg bot">Pronto per la diagnosi. Scrivi i dati, premi il microfono o usa la graffetta 📎 per caricare manuali PDF o registrazioni audio.</div>
+        <div class="msg bot">Pronto per la diagnosi. Puoi caricare manuali (📎), chiedere verifiche o raccontarmi come hai risolto un guasto per farlo memorizzare.</div>
     </div>
     
     <div id="input-bar">
         <input type="file" id="file-input" accept=".pdf,audio/*,.mp3,.m4a,.wav,.ogg,.opus,.aac" style="display:none">
         <button id="attach-btn" title="Carica PDF o Lezione Audio">📎</button>
         <button id="mic-btn" title="Registra vocale">🎤</button>
-        <input type="text" id="text-input" placeholder="Descrivi il guasto o parametri..." autocomplete="off">
+        <input type="text" id="text-input" placeholder="Descrivi guasto o soluzione trovata..." autocomplete="off">
         <button id="send-btn" title="Invia">➤</button>
     </div>
 
@@ -318,7 +359,7 @@ def serve_ui():
             try {
                 const res = await fetch('/api/kb-stats');
                 const data = await res.json();
-                kbInfo.innerText = `📚 Memoria: ${data.total_files} file (${data.total_chunks} estratti)`;
+                kbInfo.innerText = `📚 Memoria: ${data.manuali_count} manuali | 🛠️ ${data.interventi_count} interventi`;
             } catch (e) {}
         }
         updateKbStats();
@@ -385,6 +426,7 @@ def serve_ui():
                 const data = await res.json();
                 hideLoading();
                 appendMessage(data.reply, 'bot');
+                updateKbStats();
             } catch (err) {
                 hideLoading();
                 appendMessage("Errore di connessione con il server.", 'bot');
@@ -394,7 +436,6 @@ def serve_ui():
         sendBtn.addEventListener('click', sendText);
         textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
 
-        // GESTIONE CARICAMENTO PDF / AUDIO
         attachBtn.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', async () => {
             const file = fileInput.files[0];
@@ -425,7 +466,6 @@ def serve_ui():
             fileInput.value = '';
         });
 
-        // GESTIONE MICROFONO VOCALI
         micBtn.addEventListener('click', async () => {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
@@ -458,6 +498,7 @@ def serve_ui():
                             appendMessage(data.transcript, 'user', true);
                         }
                         appendMessage(data.reply, 'bot');
+                        updateKbStats();
                     } catch (err) {
                         hideLoading();
                         appendMessage("Errore durante l'invio del vocale.", 'bot');
